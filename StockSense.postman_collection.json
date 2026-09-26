@@ -1,0 +1,596 @@
+{
+  "info": {
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "End-to-end API checks for the StockSense backend. Requires schema.sql and seed.sql applied to a fresh/local database. Run folders in order with the included environment.",
+    "name": "StockSense API - Inventory Workflow Tests",
+    "_postman_id": "6e67dc53-4e29-4a34-a4db-30158fce4010"
+  },
+  "auth": {
+    "bearer": [
+      {
+        "value": "{{token}}",
+        "key": "token",
+        "type": "string"
+      }
+    ],
+    "type": "bearer"
+  },
+  "variable": [
+    {
+      "value": "http://localhost:5000/api",
+      "key": "baseUrl",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - Setup",
+      "item": [
+        {
+          "name": "Login as seeded admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"email\":\"{{email}}\",\"password\":\"{{password}}\"}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Login succeeds\",()=>pm.response.to.have.status(200));",
+                  "const d=pm.response.json();pm.environment.set(\"token\",d.token);pm.test(\"JWT is returned\",()=>pm.expect(d.token).to.be.a(\"string\"));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "List products and find Steel Sheet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Products load\",()=>pm.response.to.have.status(200));",
+                  "const p=pm.response.json().find(x=>x.sku===\"STL-001\");pm.expect(p,\"Seed product STL-001 is required\").to.exist;pm.environment.set(\"productId\",p.id);pm.environment.set(\"productUnit\",p.unit_of_measure);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "List warehouses and locations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/warehouses"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Warehouses load\",()=>pm.response.to.have.status(200));",
+                  "const ws=pm.response.json();const main=ws.find(x=>x.code===\"WH-001\");const prod=ws.find(x=>x.code===\"WH-002\");pm.expect(main,\"Seed warehouse WH-001 is required\").to.exist;pm.expect(prod,\"Seed warehouse WH-002 is required\").to.exist;pm.environment.set(\"mainWarehouseId\",main.id);pm.environment.set(\"rackAId\",main.locations.find(x=>x.code===\"A-01\").id);pm.environment.set(\"productionLocationId\",prod.locations.find(x=>x.code===\"P-01\").id);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Capture starting stock",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products/{{productId}}"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Product detail loads\",()=>pm.response.to.have.status(200));",
+                  "const d=pm.response.json();const q=(id)=>Number((d.stock_by_location||[]).find(x=>String(x.location_id)===String(id))?.quantity||0);const a=q(pm.environment.get(\"rackAId\"));const b=q(pm.environment.get(\"productionLocationId\"));pm.environment.set(\"startRackQty\",a);pm.environment.set(\"startProductionQty\",b);pm.environment.set(\"expectedRackQty\",a+10-2-3-1);pm.environment.set(\"adjustPhysicalQty\",a+10-2-3-1);pm.environment.set(\"expectedProductionQty\",b+3);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Receipt workflow",
+      "item": [
+        {
+          "name": "Create receipt draft (+10)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/receipts",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"warehouse_id\":{{mainWarehouseId}},\"supplier_name\":\"Postman Test Supplier\",\"items\":[{\"product_id\":{{productId}},\"location_id\":{{rackAId}},\"quantity\":10,\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Receipt draft created\",()=>pm.response.to.have.status(201));const d=pm.response.json();pm.environment.set(\"receiptId\",d.id);pm.test(\"Starts as DRAFT\",()=>pm.expect(d.status).to.eql(\"DRAFT\"));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Validate receipt",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/receipts/{{receiptId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Receipt validated\",()=>pm.response.to.have.status(200));pm.test(\"Status is VALIDATED\",()=>pm.expect(pm.response.json().status).to.eql(\"VALIDATED\"));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Reject duplicate receipt validation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/receipts/{{receiptId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Second validation rejected\",()=>pm.response.to.have.status(409));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Delivery workflow",
+      "item": [
+        {
+          "name": "Create delivery draft (-2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"warehouse_id\":{{mainWarehouseId}},\"customer_name\":\"Postman Test Customer\",\"items\":[{\"product_id\":{{productId}},\"location_id\":{{rackAId}},\"quantity\":2,\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Delivery draft created\",()=>pm.response.to.have.status(201));pm.environment.set(\"deliveryId\",pm.response.json().id);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Validate delivery",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/deliveries/{{deliveryId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Delivery validated\",()=>pm.response.to.have.status(200));pm.test(\"Status is VALIDATED\",()=>pm.expect(pm.response.json().status).to.eql(\"VALIDATED\"));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Reject duplicate delivery validation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/deliveries/{{deliveryId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Second validation rejected\",()=>pm.response.to.have.status(409));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Transfer workflow",
+      "item": [
+        {
+          "name": "Create transfer draft (-3 at source)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/transfers",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"source_location_id\":{{rackAId}},\"destination_location_id\":{{productionLocationId}},\"items\":[{\"product_id\":{{productId}},\"quantity\":3,\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Transfer draft created\",()=>pm.response.to.have.status(201));pm.environment.set(\"transferId\",pm.response.json().id);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Validate transfer (+3 at destination)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/transfers/{{transferId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Transfer validated\",()=>pm.response.to.have.status(200));pm.test(\"Status is VALIDATED\",()=>pm.expect(pm.response.json().status).to.eql(\"VALIDATED\"));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Reject same-location transfer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/transfers",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"source_location_id\":{{rackAId}},\"destination_location_id\":{{rackAId}},\"items\":[{\"product_id\":{{productId}},\"quantity\":1,\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Same-location transfer rejected\",()=>pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Adjustment workflow",
+      "item": [
+        {
+          "name": "Create adjustment draft (-1 from post-transfer source)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/adjustments",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"warehouse_id\":{{mainWarehouseId}},\"reason\":\"Postman workflow test adjustment\",\"items\":[{\"product_id\":{{productId}},\"location_id\":{{rackAId}},\"quantity\":{{adjustPhysicalQty}},\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Adjustment draft created\",()=>pm.response.to.have.status(201));pm.environment.set(\"adjustmentId\",pm.response.json().id);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Validate adjustment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/adjustments/{{adjustmentId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Adjustment validated\",()=>pm.response.to.have.status(200));pm.test(\"Status is VALIDATED\",()=>pm.expect(pm.response.json().status).to.eql(\"VALIDATED\"));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Reject negative counted quantity",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/adjustments",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"warehouse_id\":{{mainWarehouseId}},\"reason\":\"Invalid negative count test\",\"items\":[{\"product_id\":{{productId}},\"location_id\":{{rackAId}},\"quantity\":-1,\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Negative counted quantity rejected\",()=>pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Oversell protection",
+      "item": [
+        {
+          "name": "Create delivery that exceeds stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "value": "application/json",
+                "key": "Content-Type"
+              }
+            ],
+            "url": "{{baseUrl}}/deliveries",
+            "body": {
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"warehouse_id\":{{mainWarehouseId}},\"customer_name\":\"Oversell protection test\",\"items\":[{\"product_id\":{{productId}},\"location_id\":{{rackAId}},\"quantity\":999999,\"unit_of_measure\":\"{{productUnit}}\"}]}",
+              "mode": "raw"
+            }
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Oversell draft created for validation test\",()=>pm.response.to.have.status(201));pm.environment.set(\"oversellDeliveryId\",pm.response.json().id);"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Reject delivery with insufficient stock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/deliveries/{{oversellDeliveryId}}/validate"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Insufficient stock rejected\",()=>pm.response.to.have.status(409));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Confirm rejected delivery did not change stock",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products/{{productId}}"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Stock remains unchanged after rejected delivery\",()=>pm.response.to.have.status(200));const d=pm.response.json();const q=(id)=>Number((d.stock_by_location||[]).find(x=>String(x.location_id)===String(id))?.quantity||0);pm.expect(q(pm.environment.get(\"rackAId\"))).to.eql(Number(pm.environment.get(\"expectedRackQty\")));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - History and final state",
+      "item": [
+        {
+          "name": "Verify source and destination balances",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products/{{productId}}"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Product detail returns 200\",()=>pm.response.to.have.status(200));const d=pm.response.json();const q=(id)=>Number((d.stock_by_location||[]).find(x=>String(x.location_id)===String(id))?.quantity||0);pm.test(\"Source balance matches receipt-delivery-transfer-adjustment flow\",()=>pm.expect(q(pm.environment.get(\"rackAId\"))).to.eql(Number(pm.environment.get(\"expectedRackQty\"))));pm.test(\"Destination balance includes transfer-in\",()=>pm.expect(q(pm.environment.get(\"productionLocationId\"))).to.eql(Number(pm.environment.get(\"expectedProductionQty\"))));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Read product ledger",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/ledger?productId={{productId}}&limit=100"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Ledger returns 200\",()=>pm.response.to.have.status(200));const rows=pm.response.json();const refs=rows.map(x=>x.reference_type);pm.test(\"Ledger has test receipt, delivery, transfer and adjustment entries\",()=>{[\"RECEIPT\",\"DELIVERY\",\"TRANSFER\",\"ADJUSTMENT\"].forEach(x=>pm.expect(refs).to.include(x));});"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        },
+        {
+          "name": "Read dashboard summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/dashboard/summary?warehouseId={{mainWarehouseId}}"
+          },
+          "event": [
+            {
+              "script": {
+                "exec": [
+                  "pm.test(\"Dashboard summary returns 200\",()=>pm.response.to.have.status(200));const d=pm.response.json();[\"total_products_in_stock\",\"low_stock_items\",\"out_of_stock_items\",\"pending_receipts\",\"pending_deliveries\",\"internal_transfers_scheduled\"].forEach(k=>pm.expect(d).to.have.property(k));"
+                ],
+                "type": "text/javascript"
+              },
+              "listen": "test"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+} 
